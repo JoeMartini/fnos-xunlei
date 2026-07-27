@@ -29,7 +29,7 @@ Or place `xunlei_http.py` next to the adapters in `~/.opencli/clis/fnos-xunlei/s
 
 ## First-time setup
 
-1. Log in to your fnOS Web UI (`http://YOUR_NAS_IP:25666/`) in Chrome
+1. Log in to your fnOS Web UI (`http://YOUR_NAS_IP:5666/`) in Chrome
 2. Run the init command (extracts token from browser, discovers device info):
 
 ```bash
@@ -98,7 +98,7 @@ The key insight from reverse-engineering: the fnOS CGI proxy validates `fnos-tok
 | Discover device | GET | `/drive/v1/tasks?type=user#runner` |
 | Download paths | GET | `/device/download_paths` |
 
-All endpoints are under `http://NAS_IP:25666/cgi/ThirdParty/xunlei/index.cgi`.
+All endpoints are under `http://NAS_IP:5666/cgi/ThirdParty/xunlei/index.cgi`.
 
 ## Configuration
 
@@ -109,13 +109,14 @@ Config file: `~/.config/fnos-xunlei/token.json` (permissions 0600)
   "fnos_token": "...",
   "fnos_long_token": "...",
   "nas_ip": "192.168.1.100",
+  "fnos_port": 5666,
   "device_id": "device_id#...",
   "folder_id": "...",
   "folder_path": "/path/to/downloads/"
 }
 ```
 
-All fields except `nas_ip` are auto-discovered by `init`. No hardcoded values.
+All fields except `nas_ip` and `fnos_port` are auto-discovered by `init`. No hardcoded values. Default port is 5666 (fnOS V0.8.22+); set `fnos_port` in config if your NAS uses a custom port.
 
 ## Architecture
 

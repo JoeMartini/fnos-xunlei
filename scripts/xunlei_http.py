@@ -41,7 +41,7 @@ import base64
 CONFIG_DIR = os.path.expanduser("~/.config/fnos-xunlei")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "token.json")
 DEFAULT_NAS_IP = "192.168.1.1"
-FNOS_PORT = 25666
+FNOS_PORT = 5666  # fnOS default HTTP port (V0.8.22+), user can override via config
 
 
 # ─── Config ───────────────────────────────────────────────────────────────────
@@ -68,52 +68,57 @@ def save_config(cfg):
 def get_fnos_token():
     """Obtain a valid fnos-token via three-strategy fallback.
 
-    Returns: (token, nas_ip)
+    Returns: (token, nas_ip, fnos_port)
     """
     cfg = load_config()
     nas_ip = cfg.get("nas_ip", DEFAULT_NAS_IP)
+    fnos_port = cfg.get("fnos_port", FNOS_PORT)
 
     # Strategy 1: cached token (verify with a lightweight HTTP check)
     cached = cfg.get("fnos_token")
-    if cached and _verify_token(cached, nas_ip):
-        return cached, nas_ip
+    if cached and _verify_token(cached, nas_ip, fnos_port):
+        return cached, nas_ip, fnos_port
     if cached:
         print("[auth] Cached fnos-token expired, trying refresh...", file=sys.stderr)
 
     # Strategy 2: browser CDP bridge (also picks up long-token for future use)
-    bridge_token, bridge_long, bridge_ip = _bridge_from_browser(cfg)
+    bridge_token, bridge_long, bridge_ip, bridge_port = _bridge_from_browser(cfg)
     if bridge_token:
         cfg["fnos_token"] = bridge_token
         cfg["nas_ip"] = bridge_ip or nas_ip
+        if bridge_port:
+            cfg["fnos_port"] = bridge_port
         if bridge_long:
             cfg["fnos_long_token"] = bridge_long
         save_config(cfg)
         print("[auth] Refreshed fnos-token via browser bridge", file=sys.stderr)
-        return bridge_token, cfg["nas_ip"]
+        return bridge_token, cfg["nas_ip"], cfg.get("fnos_port", fnos_port)
 
     # Strategy 3: WebSocket tokenLogin with fnos-long-token
     long_token = cfg.get("fnos_long_token") or bridge_long
     if long_token:
         ws_ip = cfg.get("nas_ip", DEFAULT_NAS_IP)
-        ws_token = _ws_token_login(long_token, ws_ip)
+        ws_port = cfg.get("fnos_port", FNOS_PORT)
+        ws_token = _ws_token_login(long_token, ws_ip, ws_port)
         if ws_token:
             cfg["fnos_token"] = ws_token
             cfg["fnos_long_token"] = long_token
             cfg["nas_ip"] = ws_ip
+            cfg["fnos_port"] = ws_port
             save_config(cfg)
             print("[auth] Refreshed fnos-token via WebSocket tokenLogin", file=sys.stderr)
-            return ws_token, ws_ip
+            return ws_token, ws_ip, ws_port
 
     print("ERROR: Cannot obtain fnos-token.", file=sys.stderr)
-    print(f"  Login to fnOS Web UI (http://{nas_ip}:{FNOS_PORT}/) and re-run.", file=sys.stderr)
+    print(f"  Login to fnOS Web UI (http://{nas_ip}:{fnos_port}/) and re-run.", file=sys.stderr)
     sys.exit(1)
 
 
-def _verify_token(token, nas_ip):
+def _verify_token(token, nas_ip, fnos_port):
     """Quick HTTP check: does this fnos-token still work?"""
     try:
         resp = requests.get(
-            f"http://{nas_ip}:{FNOS_PORT}/cgi/ThirdParty/xunlei/index.cgi/",
+            f"http://{nas_ip}:{fnos_port}/cgi/ThirdParty/xunlei/index.cgi/",
             headers={"Cookie": f"fnos-token={token}"},
             timeout=5,
         )
@@ -125,29 +130,30 @@ def _verify_token(token, nas_ip):
 def _bridge_from_browser(cfg):
     """Extract tokens from an open Chrome tab via CDP.
 
-    Returns: (fnos_token, fnos_long_token, nas_ip) or (None, None, None)
+    Returns: (fnos_token, fnos_long_token, nas_ip, fnos_port) or (None, None, None, None)
     """
     try:
         import websocket
         import threading
         import queue
     except ImportError:
-        return None, None, None
+        return None, None, None, None
 
     nas_ip = cfg.get("nas_ip", DEFAULT_NAS_IP)
+    fnos_port = cfg.get("fnos_port", FNOS_PORT)
     cdp_url = "http://127.0.0.1:9222"
 
     try:
         tabs = requests.get(f"{cdp_url}/json/list", timeout=3).json()
     except Exception:
-        return None, None, None
+        return None, None, None, None
 
     # Prefer a tab that's on the fnOS domain
-    fnos_tabs = [t for t in tabs if nas_ip in t.get("url", "") or str(FNOS_PORT) in t.get("url", "")]
+    fnos_tabs = [t for t in tabs if nas_ip in t.get("url", "") or str(fnos_port) in t.get("url", "")]
     if not fnos_tabs:
         fnos_tabs = [t for t in tabs if t.get("type") == "page"]
     if not fnos_tabs:
-        return None, None, None
+        return None, None, None, None
 
     try:
         ws = websocket.create_connection(fnos_tabs[0]["webSocketDebuggerUrl"], timeout=5)
@@ -188,10 +194,10 @@ def _bridge_from_browser(cfg):
                 pass
         return None
 
-    result = _cdp("Network.getCookies", {"urls": [f"http://{nas_ip}:{FNOS_PORT}/"]})
+    result = _cdp("Network.getCookies", {"urls": [f"http://{nas_ip}:{fnos_port}/"]})
     ws.close()
     if not result:
-        return None, None, None
+        return None, None, None, None
 
     cookies = result.get("result", {}).get("cookies", [])
     fnos_token = None
@@ -202,10 +208,10 @@ def _bridge_from_browser(cfg):
         elif c["name"] == "fnos-long-token":
             long_token = c["value"]
 
-    return fnos_token, long_token, nas_ip
+    return fnos_token, long_token, nas_ip, fnos_port
 
 
-def _ws_token_login(long_token, nas_ip):
+def _ws_token_login(long_token, nas_ip, fnos_port):
     """Refresh fnos-token via fnOS WebSocket (ws://IP:port/websocket?type=main).
 
     fnOS WS auth protocol:
@@ -222,11 +228,11 @@ def _ws_token_login(long_token, nas_ip):
         print("[auth] pip install websocket-client for WS refresh", file=sys.stderr)
         return None
 
-    ws_url = f"ws://{nas_ip}:{FNOS_PORT}/websocket?type=main"
+    ws_url = f"ws://{nas_ip}:{fnos_port}/websocket?type=main"
     try:
         ws = ws_mod.create_connection(
             ws_url, timeout=10,
-            header={"Origin": f"http://{nas_ip}:{FNOS_PORT}"},
+            header={"Origin": f"http://{nas_ip}:{fnos_port}"},
         )
     except Exception as e:
         print(f"[auth] WS connect failed: {e}", file=sys.stderr)
@@ -325,8 +331,8 @@ class XunleiClient:
     """Pure-HTTP Xunlei client for fnOS."""
 
     def __init__(self):
-        self.token, nas_ip = get_fnos_token()
-        self.base = f"http://{nas_ip}:{FNOS_PORT}"
+        self.token, nas_ip, fnos_port = get_fnos_token()
+        self.base = f"http://{nas_ip}:{fnos_port}"
         self.xunlei = f"{self.base}/cgi/ThirdParty/xunlei/index.cgi"
         self.session = requests.Session()
         self.session.headers["Cookie"] = f"fnos-token={self.token}"
