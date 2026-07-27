@@ -1,6 +1,6 @@
 # fnos-xunlei — 飞牛 fnOS 迅雷 OpenCLI Adapter
 
-[OpenCLI](https://github.com/JackWener/opencli) adapter for the Xunlei (迅雷) download app built into [fnOS](https://www.fnos.com/) (飞牛 NAS). Pure HTTP — no browser, no CDP, no Chrome required.
+[OpenCLI](https://github.com/jackwener/opencli) adapter for the Xunlei (迅雷) download app built into [fnOS](https://www.fnos.com/) (飞牛 NAS). Pure HTTP — no browser, no CDP, no Chrome required for ongoing use.
 
 ## Features
 
@@ -29,6 +29,10 @@ Or place `xunlei_http.py` next to the adapters in `~/.opencli/clis/fnos-xunlei/s
 
 ## First-time setup
 
+The initial token extraction requires a logged-in fnOS browser session. On a **desktop** this is straightforward — on a **headless server or NAS** without GUI, see [Headless environment setup](#headless-environment-setup) below.
+
+### Desktop (has browser)
+
 1. Log in to your fnOS Web UI (`http://YOUR_NAS_IP:5666/`) in Chrome
 2. Run the init command (extracts token from browser, discovers device info):
 
@@ -36,7 +40,33 @@ Or place `xunlei_http.py` next to the adapters in `~/.opencli/clis/fnos-xunlei/s
 python3 ~/.local/share/fnos-xunlei/xunlei_http.py init
 ```
 
-3. Done! No browser needed after this.
+3. Done! No browser needed after this — all subsequent calls are pure HTTP.
+
+### Headless environment setup
+
+Most NAS and VPS servers don't have a GUI. Without a browser, you can't log in to fnOS Web UI directly. **[remote-chromium](https://github.com/JoeMartini/remote-chromium)** solves this — it provides a containerized Chromium with KasmVNC web desktop and CDP endpoint on headless Linux:
+
+1. **Deploy remote-chromium** on your server (or any machine that can reach the NAS):
+
+```bash
+# One-line deploy: Docker + KasmVNC + Chromium + CDP on port 9224
+curl -fsSL https://raw.githubusercontent.com/JoeMartini/remote-chromium/main/scripts/quickstart.sh | bash
+cd ~/remote-chromium && ./scripts/start.sh
+```
+
+2. **Log in to fnOS** through the remote Chromium web desktop:
+   - Open `https://your-server:50443/` in your local browser
+   - In the remote Chromium, navigate to `http://YOUR_NAS_IP:5666/` and log in to fnOS
+
+3. **Run init** — the script will auto-detect the remote Chromium via CDP (`localhost:9222` or `localhost:9224`) and extract the token:
+
+```bash
+python3 ~/.local/share/fnos-xunlei/xunlei_http.py init
+```
+
+4. **Token persisted** — after this one-time setup, all calls are pure HTTP. The remote Chromium can be stopped; it's only needed again when `fnos-long-token` expires (30 days).
+
+> **Alternative without remote-chromium:** If you have a desktop machine on the same network, run `init` there (it will extract the token from your local Chrome), then copy `~/.config/fnos-xunlei/token.json` to the headless server.
 
 ## Usage
 
@@ -132,6 +162,11 @@ scripts/
 ```
 
 JS adapters handle argument validation and output formatting. All auth and API logic lives in the Python backend — single source of truth, no JS reimplementation.
+
+## Related projects
+
+- **[remote-chromium](https://github.com/JoeMartini/remote-chromium)** — Headless Linux Chromium container (KasmVNC + CDP). Provides the browser environment needed for the one-time fnOS login on servers without GUI.
+- **[OpenCLI](https://github.com/jackwener/opencli)** — CLI framework that this adapter targets. Supports LOCAL, COOKIE, INTERCEPT, and UI strategies.
 
 ## Limitations
 

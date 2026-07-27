@@ -4,3 +4,4 @@ __pycache__/
 # Config (contains personal tokens — NEVER commit)
 token.json
 ~/.config/fnos-xunlei/
+scripts/__pycache__/
