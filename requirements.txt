@@ -1,0 +1,5 @@
+requests>=2.20
+websocket-client>=1.0.0
+# Optional: RSA encryption for WebSocket token refresh (fnos-long-token → fnos-token)
+# Without this, the WebSocket tier falls back to plain text (may not work on all fnOS versions)
+cryptography>=3.0

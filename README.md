@@ -10,13 +10,35 @@
 - **Zero hardcoded values** — device_id and folder_id auto-discovered on first run
 - **Full task lifecycle** — list, add, pause, resume, get link, delete
 
+## Requirements
+
+### Runtime
+
+| Dependency | Required | Purpose |
+|------------|----------|---------|
+| Python ≥ 3.8 | Yes | Backend script (`xunlei_http.py`) |
+| [requests](https://pypi.org/project/requests/) | Yes | HTTP API calls to fnOS Xunlei |
+| [websocket-client](https://pypi.org/project/websocket-client/) | Yes* | Token refresh via WebSocket (tier 3 fallback) |
+| [cryptography](https://pypi.org/project/cryptography/) | Optional | RSA encryption for WebSocket tokenLogin (without it, WS tier may fail on some fnOS versions) |
+| [OpenCLI](https://github.com/jackwener/opencli) | For JS adapters only | CLI framework that hosts the adapter |
+| Node.js ≥ 18 | For JS adapters only | OpenCLI runtime |
+
+*websocket-client is only needed when the cached token expires AND no browser is available. In normal operation with a working browser bridge, it is not invoked.
+
+### Platform
+
+- **fnOS** V0.8.22+ (default port 5666) — the Xunlei app is built into fnOS
+- **Chrome/Chromium** with CDP (`--remote-debugging-port=9222`) — only needed for initial token extraction and token refresh (tier 2). Not required for ongoing HTTP API calls once token is cached.
+
+### System tools
+
+The backend uses Python stdlib only beyond `requests`/`websocket-client`. No `ffprobe`, `curl`, or other system tools are needed.
+
 ## Install
 
 ```bash
 # 1. Install Python dependencies
-pip install requests websocket-client
-# Optional (for WebSocket token refresh with RSA):
-pip install cryptography
+pip install -r requirements.txt
 
 # 2. Copy adapter to OpenCLI clis directory
 cp -r clis/fnos-xunlei ~/.opencli/clis/
