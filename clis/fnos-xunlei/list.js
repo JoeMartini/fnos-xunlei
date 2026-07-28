@@ -20,7 +20,7 @@ cli({
     args: [
         { name: 'limit', type: 'int', default: 100, help: '返回数量 (max 200)' },
     ],
-    columns: ['index', 'id', 'name', 'phase', 'progress'],
+    columns: ['index', 'id', 'name', 'phase', 'speed', 'progress'],
     func: async (kwargs) => {
         const limit = Number(kwargs.limit ?? 100);
         if (!Number.isInteger(limit) || limit <= 0) {
@@ -46,6 +46,7 @@ cli({
             id: t.id || '',
             name: t.name || '',
             phase: t.phase || 'unknown',
+            speed: t.speed_kb > 0 ? `${t.speed_kb}KB/s` : '-',
             progress: t.progress || '0',
         }));
     },

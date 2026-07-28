@@ -14,6 +14,9 @@ Usage:
     xunlei_http.py list [--limit N] [--json]
     xunlei_http.py add <magnet>
     xunlei_http.py delete <task_id> [--keep-files]
+    xunlei_http.py pause <task_id>
+    xunlei_http.py resume <task_id>
+    xunlei_http.py link <task_id>
     xunlei_http.py auth  # show pan_auth status
     xunlei_http.py init  # bootstrap: discover device_id & folder_id
 
@@ -22,6 +25,7 @@ Config: ~/.config/fnos-xunlei/token.json
       "fnos_token": "...",
       "fnos_long_token": "...",
       "nas_ip": "192.168.x.x",
+      "fnos_port": 5666,
       "device_id": "device_id#...",
       "folder_id": "...",
       "folder_path": "/path/to/downloads/"
@@ -158,7 +162,7 @@ def _bridge_from_browser(cfg):
     try:
         ws = websocket.create_connection(fnos_tabs[0]["webSocketDebuggerUrl"], timeout=5)
     except Exception:
-        return None, None, None
+        return None, None, None, None
 
     ws.settimeout(2)
     msg_q = queue.Queue()
@@ -354,7 +358,7 @@ class XunleiClient:
         self.pan_auth = match.group(1)
         return self.pan_auth
 
-    def _api(self, path, params=None, body=None, _retry=True):
+    def _api(self, path, params=None, body=None, method=None, _retry=True):
         """Call a Xunlei API endpoint with auto pan_auth refresh on 403."""
         if not self.pan_auth:
             self._get_pan_auth()
@@ -362,8 +366,11 @@ class XunleiClient:
         params = dict(params or {})
         params["pan_auth"] = self.pan_auth
         headers = {"Referer": f"{self.xunlei}/"}
-        if body is not None:
+        if body is not None or method:
             headers["Content-Type"] = "application/json"
+        if method:
+            resp = self.session.request(method, url, params=params, json=body, headers=headers, timeout=15)
+        elif body is not None:
             resp = self.session.post(url, params=params, json=body, headers=headers, timeout=15)
         else:
             resp = self.session.get(url, params=params, headers=headers, timeout=15)
@@ -372,7 +379,7 @@ class XunleiClient:
         if resp.status_code == 403 and _retry:
             self.pan_auth = None
             self._get_pan_auth()
-            return self._api(path, params, body, _retry=False)
+            return self._api(path, params, body, method, _retry=False)
         return resp
 
     def discover_device(self):
@@ -416,6 +423,14 @@ class XunleiClient:
             "folder_path": self.folder_path,
         }
 
+    def _get_task(self, task_id):
+        """Fetch a single task by ID (for link/details)."""
+        params = {"space": self.device_id, "pan_auth": self.pan_auth}
+        resp = self._api(f"/drive/v1/tasks/{task_id}", params=params)
+        if resp.status_code != 200:
+            return None
+        return resp.json().get("task", resp.json())
+
     def list_tasks(self, limit=100):
         if not self.device_id:
             self.discover_device()
@@ -439,12 +454,21 @@ class XunleiClient:
             spec = params_inner.get("spec", "")
             phase_match = re.search(r'"phase":"(\w+)"', spec)
             phase = phase_match.group(1).replace("PHASE_TYPE_", "").lower() if phase_match else "unknown"
+
+            speed = 0
+            try:
+                speed = int(params_inner.get("speed", "0"))
+            except (ValueError, TypeError):
+                pass
+
             result.append({
                 "id": t.get("id", ""),
                 "name": t.get("name", ""),
                 "phase": phase,
                 "progress": params_inner.get("progress", "0"),
                 "size": params_inner.get("size", "0"),
+                "speed": speed,
+                "speed_kb": speed // 1024,
             })
         return result
 
@@ -504,6 +528,74 @@ class XunleiClient:
             return {"ok": True}
         return {"error": f"delete HTTP {resp.status_code}: {resp.text}"}
 
+    def pause_task(self, task_id):
+        """Pause a task via PATCH /drive/v1/task with set_params.spec={"phase":"pause"}."""
+        if not self.device_id:
+            self.discover_device()
+        body = {
+            "space": self.device_id,
+            "type": "user#download-url",
+            "id": task_id,
+            "set_params": {
+                "spec": json.dumps({"phase": "pause"})
+            }
+        }
+        resp = self._api("/drive/v1/task", body=body, method="PATCH")
+        if resp.status_code == 200:
+            return {"ok": True, "paused": task_id}
+        return {"error": f"pause HTTP {resp.status_code}: {resp.text}"}
+
+    def resume_task(self, task_id):
+        """Resume a paused task via PATCH /drive/v1/task with set_params.spec={"phase":"running"}."""
+        if not self.device_id:
+            self.discover_device()
+        body = {
+            "space": self.device_id,
+            "type": "user#download-url",
+            "id": task_id,
+            "set_params": {
+                "spec": json.dumps({"phase": "running"})
+            }
+        }
+        resp = self._api("/drive/v1/task", body=body, method="PATCH")
+        if resp.status_code == 200:
+            return {"ok": True, "resumed": task_id}
+        return {"error": f"resume HTTP {resp.status_code}: {resp.text}"}
+
+    def get_task_link(self, task_id):
+        """Get the original download URL (magnet/http) for a task.
+
+        In the Xunlei UI, "复制链接" (copy link) copies the original URL
+        from the task's params.url field. This is a pure read operation —
+        no separate API endpoint needed.
+        """
+        if not self.device_id:
+            self.discover_device()
+
+        # First try to get from list (faster, avoids individual fetch)
+        params = {
+            "space": self.device_id,
+            "page_token": "",
+            "filters": json.dumps({
+                "phase": {"in": "PHASE_TYPE_PENDING,PHASE_TYPE_RUNNING,PHASE_TYPE_PAUSED,PHASE_TYPE_ERROR,PHASE_TYPE_SUCCESS"},
+                "type": {"in": "user#download-url,user#download"}
+            }),
+            "limit": "200",
+            "device_space": "",
+        }
+        resp = self._api("/drive/v1/tasks", params=params)
+        if resp.status_code == 200:
+            for t in resp.json().get("tasks", []):
+                if t.get("id") == task_id:
+                    url = t.get("params", {}).get("url", "")
+                    name = t.get("name", "")
+                    info_hash = t.get("params", {}).get("info_hash", "")
+                    if url:
+                        return {"ok": True, "url": url, "name": name, "info_hash": info_hash}
+                    return {"error": "Task has no URL field", "name": name}
+
+        return {"error": f"Task {task_id} not found"}
+
     def auth_info(self):
         if not self.pan_auth:
             self._get_pan_auth()
@@ -543,10 +635,11 @@ def main():
         if "--json" in sys.argv:
             print(json.dumps(tasks, ensure_ascii=False))
         else:
-            print(f"{'ID':<30} {'Phase':<12} {'Name'}")
-            print("-" * 80)
+            print(f"{'ID':<30} {'Phase':<12} {'Speed':>10} {'Name'}")
+            print("-" * 90)
             for t in tasks:
-                print(f"{t['id']:<30} {t['phase']:<12} {t['name'][:40]}")
+                speed_str = f"{t['speed_kb']}KB/s" if t.get('speed_kb', 0) > 0 else "-"
+                print(f"{t['id']:<30} {t['phase']:<12} {speed_str:>10} {t['name'][:40]}")
             print(f"\nTotal: {len(tasks)} tasks")
 
     elif cmd == "add":
@@ -569,6 +662,35 @@ def main():
         result = client.delete_task(task_id, delete_files=not keep)
         if result.get("ok"):
             print(json.dumps({"ok": True, "deleted": task_id}))
+        else:
+            print(json.dumps(result, ensure_ascii=False), file=sys.stderr)
+            sys.exit(1)
+
+    elif cmd == "pause":
+        if len(sys.argv) < 3:
+            print("Usage: xunlei_http.py pause <task_id>", file=sys.stderr)
+            sys.exit(1)
+        result = client.pause_task(sys.argv[2])
+        print(json.dumps(result, ensure_ascii=False))
+        if not result.get("ok"):
+            sys.exit(1)
+
+    elif cmd == "resume":
+        if len(sys.argv) < 3:
+            print("Usage: xunlei_http.py resume <task_id>", file=sys.stderr)
+            sys.exit(1)
+        result = client.resume_task(sys.argv[2])
+        print(json.dumps(result, ensure_ascii=False))
+        if not result.get("ok"):
+            sys.exit(1)
+
+    elif cmd == "link":
+        if len(sys.argv) < 3:
+            print("Usage: xunlei_http.py link <task_id>", file=sys.stderr)
+            sys.exit(1)
+        result = client.get_task_link(sys.argv[2])
+        if result.get("ok"):
+            print(result["url"])
         else:
             print(json.dumps(result, ensure_ascii=False), file=sys.stderr)
             sys.exit(1)

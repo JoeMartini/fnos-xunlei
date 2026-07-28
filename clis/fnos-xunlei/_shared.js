@@ -1,8 +1,7 @@
 // Shared utilities for fnos-xunlei adapters.
 //
-// All three adapters (list/add/delete) delegate to the Python backend
-// (xunlei_http.py) which handles the full auth chain and HTTP API calls.
-// This keeps the auth logic in one place and avoids reimplementing it in JS.
+// All adapters delegate to the Python backend (xunlei_http.py) which handles
+// the full auth chain and HTTP API calls.
 
 import { execSync } from 'node:child_process';
 import * as path from 'node:path';
@@ -18,6 +17,7 @@ import { CommandExecutionError, AuthRequiredError } from '@jackwener/opencli/err
 export function resolveBackend() {
     const candidates = [
         path.join(import.meta.dirname, 'scripts', 'xunlei_http.py'),
+        path.join(import.meta.dirname, 'xunlei_http.py'),
         path.join(os.homedir(), '.local/share/fnos-xunlei/xunlei_http.py'),
         '/usr/local/share/fnos-xunlei/xunlei_http.py',
     ];
@@ -31,7 +31,6 @@ export function resolveBackend() {
 }
 
 // Run the Python backend and return stdout.
-// Throws CommandExecutionError on non-zero exit.
 export function runBackend(scriptPath, args) {
     const cmdArgs = [scriptPath, ...args].map((a) => '"' + a.replace(/"/g, '\\"') + '"');
     const cmd = 'python3 ' + cmdArgs.join(' ');

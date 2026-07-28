@@ -8,6 +8,7 @@
 - **Auto token refresh** — three-tier fallback (cache → browser bridge → WebSocket)
 - **OpenCLI LOCAL strategy** — `browser: false`, starts instantly
 - **Zero hardcoded values** — device_id and folder_id auto-discovered on first run
+- **Full task lifecycle** — list, add, pause, resume, get link, delete
 
 ## Install
 
@@ -73,10 +74,13 @@ python3 ~/.local/share/fnos-xunlei/xunlei_http.py init
 ### OpenCLI commands
 
 ```bash
-opencli fnos-xunlei list [--limit 10]           # List download tasks
-opencli fnos-xunlei add "magnet:?xt=urn:btih:..."  # Add magnet download
-opencli fnos-xunlei delete <task_id>             # Delete task (and files)
-opencli fnos-xunlei delete <task_id> --keepFiles # Delete task, keep files
+opencli fnos-xunlei list [--limit 10]                 # List tasks (with speed)
+opencli fnos-xunlei add "magnet:?xt=urn:btih:..."      # Add magnet download
+opencli fnos-xunlei pause <task_id>                    # Pause a task
+opencli fnos-xunlei resume <task_id>                   # Resume a paused task
+opencli fnos-xunlei link <task_id>                     # Get original download URL (复制链接)
+opencli fnos-xunlei delete <task_id>                   # Delete task (and files)
+opencli fnos-xunlei delete <task_id> --keepFiles       # Delete task, keep files
 ```
 
 Output formats: `-f json`, `-f yaml`, `-f table` (default), `-f csv`
@@ -84,12 +88,14 @@ Output formats: `-f json`, `-f yaml`, `-f table` (default), `-f csv`
 ### Python backend directly
 
 ```bash
-python3 xunlei_http.py init     # Discover device_id & folder_id
-python3 xunlei_http.py list     # List tasks
-python3 xunlei_http.py list --json  # JSON output for scripting
-python3 xunlei_http.py add <magnet>
-python3 xunlei_http.py delete <task_id> [--keep-files]
-python3 xunlei_http.py auth     # Show token status
+python3 xunlei_http.py init                    # Discover device_id & folder_id
+python3 xunlei_http.py list [--limit N] [--json]  # List tasks (with speed)
+python3 xunlei_http.py add <magnet>            # Add download
+python3 xunlei_http.py pause <task_id>         # Pause task
+python3 xunlei_http.py resume <task_id>        # Resume task
+python3 xunlei_http.py link <task_id>          # Print original download URL
+python3 xunlei_http.py delete <task_id> [--keep-files]  # Delete task
+python3 xunlei_http.py auth                    # Show token status
 ```
 
 ## How it works
@@ -108,7 +114,7 @@ The key insight from reverse-engineering: the fnOS CGI proxy validates `fnos-tok
 | Tier | Trigger | Method |
 |------|---------|--------|
 | 1. Cache | Default | Read `~/.config/fnos-xunlei/token.json`, verify via HTTP |
-| 2. Browser bridge | Cache expired + Chrome running | CDP extracts fresh fnos-token + fnos-long-token |
+| 2. Browser bridge | Cache expired + Chrome running | CDP extracts fresh fnos-token + fnos-long-token, auto-detects port from tab URL |
 | 3. WebSocket | No browser + has fnos-long-token | WS `user.tokenLogin` refreshes via 30-day long-token |
 
 | Token | Validity | Source |
@@ -124,9 +130,15 @@ The key insight from reverse-engineering: the fnOS CGI proxy validates `fnos-tok
 | List tasks | GET | `/drive/v1/tasks` |
 | Parse magnet | POST | `/drive/v1/resource/list` |
 | Create task | POST | `/drive/v1/task` |
+| Pause/Resume task | PATCH | `/drive/v1/task` (with `set_params.spec={"phase":"pause"}` or `"running"`) |
+| Get task link | — | `params.url` field from task list (no separate API) |
 | Delete task | POST | `/method/delete/drive/v1/tasks` |
 | Discover device | GET | `/drive/v1/tasks?type=user#runner` |
 | Download paths | GET | `/device/download_paths` |
+
+Pause/resume uses `PATCH /drive/v1/task` with `set_params.spec = {"phase": "pause"}` (or `"running"` for resume). This API pattern was reverse-engineered from the Xunlei SPA's JavaScript.
+
+The "复制链接" (copy link) feature reads the original magnet/HTTP URL from the task's `params.url` field — no separate API endpoint needed.
 
 All endpoints are under `http://NAS_IP:5666/cgi/ThirdParty/xunlei/index.cgi`.
 
@@ -146,16 +158,19 @@ Config file: `~/.config/fnos-xunlei/token.json` (permissions 0600)
 }
 ```
 
-All fields except `nas_ip` and `fnos_port` are auto-discovered by `init`. No hardcoded values. Default port is 5666 (fnOS V0.8.22+); set `fnos_port` in config if your NAS uses a custom port.
+All fields except `nas_ip` and `fnos_port` are auto-discovered by `init`. No hardcoded values. Default port is 5666 (fnOS V0.8.22+); set `fnos_port` in config if your NAS uses a custom port. The browser bridge also auto-detects the port from the Chrome tab URL.
 
 ## Architecture
 
 ```
 clis/fnos-xunlei/
 ├── _shared.js     # resolveBackend() + runBackend()
-├── list.js        # Strategy.LOCAL, browser:false
-├── add.js
-└── delete.js
+├── list.js        # List tasks (with speed)
+├── add.js         # Add magnet download
+├── pause.js       # Pause task
+├── resume.js      # Resume task
+├── link.js        # Get original download URL
+└── delete.js      # Delete task
 
 scripts/
 └── xunlei_http.py  # Python backend (auth + API calls)
